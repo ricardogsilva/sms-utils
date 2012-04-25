@@ -1,0 +1,26 @@
+suite suiteTeste
+    edit primeiro Ricardo
+    edit segundo Filipe
+    edit terceiro 'Soares'
+    edit resto 'Garcia da Silva'
+    family fam1
+        edit var5 'Esta e longa'
+        task teste
+            edit var1 Ricardo
+            edit var2 Joao
+        endtask
+        task outra
+            edit var3 Perdigao
+        endtask
+        task maisuma
+            edit var4 Sandra
+        endtask
+        family subfam1
+            task dentro
+                trigger ../outra == complete
+                edit var6 Uma
+                edit var7 Duas
+            endtask
+        endfamily
+    endfamily
+endsuite
