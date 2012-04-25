@@ -151,8 +151,8 @@ class Suite(SMSNode):
         super(Suite, self).__init__(parse_obj=parse_obj, parent=None)
         self._path = '/'
         self.families = [Family(f, parent=self) for f in parse_obj.families]
-        for f in self.families:
-            f._parse_triggers()
+        #for f in self.families:
+        #    f._parse_triggers()
 
     def _parse_file(self, def_file):
         fh = open(def_file, 'r')
@@ -161,7 +161,8 @@ class Suite(SMSNode):
 
     def _get_default_grammar(self):
         quote = pp.Word('\'"', exact=1).suppress()
-        paren = pp.Word('()', exact=1).suppress()
+        l_paren = pp.Literal('(').suppress()
+        r_paren = pp.Literal(')').suppress()
         identifier = pp.Word(pp.alphas, pp.alphanums)
         var_start = pp.Keyword('edit').suppress()
         task_start = pp.Keyword('task').suppress()
@@ -171,17 +172,21 @@ class Suite(SMSNode):
         suite_start = pp.Keyword('suite').suppress()
         suite_end = pp.Keyword('endsuite').suppress()
         status_complete = pp.Keyword('complete')
-
         sms_node_path = pp.Word('./' + pp.alphanums)
         trigger_eq = pp.Keyword('==')
         trigger_neq = pp.Keyword('!=')
         trigger_start = pp.Keyword('trigger').suppress()
-        trigger_exp = pp.Forward()
-        trigger_exp << pp.Optional(paren) + sms_node_path + \
-                (trigger_eq ^ trigger_neq) + status_complete + \
-                pp.Optional(paren)
-        trigger_value = trigger_start + pp.Group(trigger_exp) 
-        #trigger_value = trigger_start + pp.Group(pp.restOfLine) 
+        trigger_and = pp.Keyword('AND')
+        trigger_or = pp.Keyword('OR')
+        #trigger_exp = pp.Forward()
+        trigger_exp = pp.Group(sms_node_path + (trigger_eq ^ trigger_neq) + \
+                status_complete)
+        boolean_relation = pp.Forward()
+        boolean_relation << pp.Group(pp.Optional(l_paren) + trigger_exp + \
+                pp.ZeroOrMore((trigger_and ^ trigger_or) + boolean_relation) + \
+                pp.Optional(r_paren))
+        #trigger_value = trigger_start + pp.Group(trigger_exp) 
+        trigger_value = trigger_start + pp.Group(boolean_relation)
 
         var_value = pp.Word(pp.alphanums) | (quote + pp.Combine(pp.OneOrMore(pp.Word(pp.alphanums)), adjacent=False, joinString=' ') + quote)
         sms_var = var_start + pp.Dict(pp.Group(identifier + var_value))

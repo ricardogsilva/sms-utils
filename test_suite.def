@@ -17,6 +17,7 @@ suite suiteTeste
         endtask
         family subfam1
             task dentro
+                trigger (../outra == complete AND ../maisuma == complete) OR ../outra == complete
                 trigger ../outra == complete
                 edit var6 Uma
                 edit var7 Duas
