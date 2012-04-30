@@ -1,22 +1,21 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+
 '''
 Tools for parsing and writing for SMS definition files.
 
 TODO:
-    - Add parsing rules for: trigger, limit, label, meter
-    - Add a data model for the missing SMS objects (limit, label, meter)
+    - Add parsing rules for comments
+    - Add parsing rules for: label, meter
+    - Add a data model for the missing SMS objects (label, meter)
     - Add a save() method to Suite objects to save their cdp definiton to a file
     - Add a serialize() method to SMSNode objects that serializes to JSON
     - Add a deserialize() method to construct SMSNode objects from JSON
-    - Restrict the Suite class so that:
-        - parent cannot be changed
-    - Restrict the Family class so that:
-        - parent cannot be set to an instance of Task
 
 '''
 
+import re
 import pyparsing as pp
 
 class SMSNode(object):
@@ -35,7 +34,8 @@ class SMSNode(object):
     @name.setter
     def name(self, name):
         self._name = name
-        self.parent = self.parent
+        old_path_list = self._path.split('/')
+        self._path = '/'.join(old_path_list[:-1]) + '/' + self._name
 
     @property
     def path(self):
@@ -63,7 +63,7 @@ class SMSNode(object):
 
     def __init__(self, parse_obj=None, parent=None):
         self.sms_type = self.__class__.__name__.lower()
-        self._parent = parent
+        self.parent = parent
         if parse_obj is not None:
             self.name = parse_obj.name
             self.variables = self._get_variables(parse_obj)
@@ -72,13 +72,13 @@ class SMSNode(object):
 
     def cdp_definition(self, indent_order=0):
         output = '%s%s %s\n' % ('\t'*indent_order, self.sms_type, self.name)
-        output = self._start_cdp_definition(indent_order)
+        output += self._start_cdp_definition(indent_order)
         output += self._specific_cdp_definition(indent_order+1)
         output += self._end_cdp_definition(indent_order)
         return output
 
     def _start_cdp_definition(self, indent_order=0):
-        output = '%s%s %s\n' % ('\t'*indent_order, self.sms_type, self.name)
+        output = ''
         for k, v in self.variables.iteritems():
             output += '%sedit %s "%s"\n' % ('\t'*(indent_order+1), k, v)
         return output
@@ -142,6 +142,15 @@ class Suite(SMSNode):
 
     families = []
 
+    #@property
+    #def parent(self):
+    #    return self._parent
+
+    #@parent.setter
+    #def parent(self, parent):
+    #    raise Exception, 'A suite cannot have a parent.'
+        
+
     def __init__(self, def_file, grammar=None):
         if grammar is None:
             grammar = self._get_default_grammar()
@@ -151,8 +160,8 @@ class Suite(SMSNode):
         super(Suite, self).__init__(parse_obj=parse_obj, parent=None)
         self._path = '/'
         self.families = [Family(f, parent=self) for f in parse_obj.families]
-        #for f in self.families:
-        #    f._parse_triggers()
+        for f in self.families:
+            f._parse_triggers()
 
     def _parse_file(self, def_file):
         fh = open(def_file, 'r')
@@ -163,7 +172,7 @@ class Suite(SMSNode):
         quote = pp.Word('\'"', exact=1).suppress()
         l_paren = pp.Literal('(').suppress()
         r_paren = pp.Literal(')').suppress()
-        identifier = pp.Word(pp.alphas, pp.alphanums)
+        identifier = pp.Word(pp.alphas, pp.alphanums + '_')
         var_start = pp.Keyword('edit').suppress()
         task_start = pp.Keyword('task').suppress()
         task_end = pp.Keyword('endtask').suppress()
@@ -172,29 +181,24 @@ class Suite(SMSNode):
         suite_start = pp.Keyword('suite').suppress()
         suite_end = pp.Keyword('endsuite').suppress()
         status_complete = pp.Keyword('complete')
-        sms_node_path = pp.Word('./' + pp.alphanums)
-        trigger_eq = pp.Keyword('==')
-        trigger_neq = pp.Keyword('!=')
         trigger_start = pp.Keyword('trigger').suppress()
-        trigger_and = pp.Keyword('AND')
-        trigger_or = pp.Keyword('OR')
-        #trigger_exp = pp.Forward()
-        trigger_exp = pp.Group(sms_node_path + (trigger_eq ^ trigger_neq) + \
-                status_complete)
-        boolean_relation = pp.Forward()
-        boolean_relation << pp.Group(pp.Optional(l_paren) + trigger_exp + \
-                pp.ZeroOrMore((trigger_and ^ trigger_or) + boolean_relation) + \
-                pp.Optional(r_paren))
-        #trigger_value = trigger_start + pp.Group(trigger_exp) 
-        trigger_value = trigger_start + pp.Group(boolean_relation)
-
+        trigger_value = trigger_start + pp.restOfLine
+        sms_limit = pp.Keyword('limit').suppress() + pp.Group(identifier + pp.Word(pp.nums))
+        sms_node_path = pp.Word('./_' + pp.alphanums)
+        sms_in_limit = pp.Group(
+                            pp.Keyword('inlimit').suppress() + \
+                            sms_node_path + pp.Literal(':').suppress() + \
+                            identifier
+                       )
+        #sms_in_limit = pp.Keyword('inlimit').suppress() + pp.restOfLine
         var_value = pp.Word(pp.alphanums) | (quote + pp.Combine(pp.OneOrMore(pp.Word(pp.alphanums)), adjacent=False, joinString=' ') + quote)
         sms_var = var_start + pp.Dict(pp.Group(identifier + var_value))
         sms_task = task_start + \
                    pp.Dict(
                         pp.Group(
                             identifier.setResultsName('name') + \
-                            pp.Group(pp.ZeroOrMore(trigger_value)).setResultsName('triggers') & \
+                            pp.Optional(trigger_value.setResultsName('trigger')) & \
+                            pp.Group(pp.ZeroOrMore(sms_in_limit)).setResultsName('inlimits') & \
                             pp.Group(pp.ZeroOrMore(sms_var)).setResultsName('variables')
                         ) \
                     ) + pp.Optional(task_end)
@@ -203,6 +207,9 @@ class Suite(SMSNode):
                 pp.Dict(
                         pp.Group(
                             identifier.setResultsName('name') + \
+                            pp.Group(pp.ZeroOrMore(sms_in_limit)).setResultsName('inlimits') & \
+                            pp.Group(pp.ZeroOrMore(sms_limit)).setResultsName('limits') & \
+                            pp.Optional(trigger_value.setResultsName('trigger')) & \
                             pp.Group(pp.ZeroOrMore(sms_var)).setResultsName('variables') & \
                             pp.Group(pp.ZeroOrMore(sms_task)).setResultsName('tasks') & \
                             pp.Group(pp.ZeroOrMore(sms_family)).setResultsName('families') \
@@ -238,18 +245,67 @@ class Suite(SMSNode):
         return self
 
 
-class Task(SMSNode):
+class NodeWithTriggers(SMSNode):
 
-    triggers = []
-    _trigger_exps = []
+    trigger = ('', [])
+    _trigger_exp = ''
+
+    def _parse_trigger(self):
+
+        new_exp = ''
+        nodes = []
+        path_obj = re.compile(r'(\(*)([\w\d./=]*)(\)*)')
+        for tok in self._trigger_exp.split():
+            re_obj = path_obj.search(tok)
+            for i in re_obj.groups():
+                if i == '':
+                    pass
+                elif ('(' in i) or (')' in i):
+                    new_exp += i
+                elif i in ('complete', 'unknown'):
+                    new_exp += ' "%s" ' % i
+                elif i in ('AND', 'OR'):
+                    new_exp += ' %s ' % i.lower()
+                elif i in ('==',):
+                    new_exp += ' %s ' % i
+                else:
+                    new_exp += ' "%s" '
+                    nodes.append(self.get_node(i))
+        self.trigger = new_exp, nodes
+
+    def evalute_trigger(self):
+        exp, nodes = self.trigger
+        if exp == '':
+            result = True
+        else:
+            result = eval(exp % tuple([n.status for n in nodes]))
+        return result
+
+
+class Task(NodeWithTriggers):
+
+    #@property
+    #def parent(self):
+    #    return self._parent
+
+    #@parent.setter
+    #def parent(self, theParent):
+    #    if isinstance(theParent, Family):
+    #        super(Task, self).parent = theParent
+    #    else:
+    #        raise Exception, 'A task\'s parent must be a Family.'
+
+    in_limits = []
 
     def __init__(self, parse_obj=None, parent=None, name=None, 
-                 variables=None, triggers=None):
+                 variables=None, trigger=None):
         if parse_obj is None and name is None:
             raise Exception
         super(Task, self).__init__(parse_obj=parse_obj, parent=parent)
-        self.triggers = []
-        self._trigger_exps = [t for t in parse_obj.triggers]
+        try:
+            self._trigger_exp = parse_obj.trigger[0]
+        except IndexError:
+            pass
         if name is not None:
             self.name = name
         if variables is not None:
@@ -261,35 +317,42 @@ class Task(SMSNode):
             node = self
         return node
 
-    def _parse_triggers(self):
-        '''
-        Inputs:
-
-            exp - a three element list containing left operand, operator
-                and right operand.
-        '''
-
-        for exp in self._trigger_exps:
-            l_path, operator, status = exp
-            l_node = self.get_node(l_path)
-            result = None
-            if l_node is not None:
-                self.triggers.append([l_node, operator, status])
-
-
     def _specific_cdp_definition(self, indent_order=0):
         output = ''
-        for t in self.triggers:
-            path, op, st = t[0].path, t[1], t[2] 
-            output += '%strigger %s %s %s\n' % ('\t' * indent_order, path, op, st)
+        exp, nodes = self.trigger
+        if exp != '':
+            trig = exp % tuple([n.path for n in nodes])
+            output += '%strigger %s\n' % ('\t' * indent_order, trig)
         return output
 
+    def to_json(self):
+        result = '{"type": "%s", "name": "%s", "status": "%s", "parent": "%s"' % \
+                (self.sms_type, self.name, self.status, self.parent)
+        if len(self.variables.keys()) > 0:
+            result += ', "variables": {'
+            for k, v in self.variables.iteritems():
+                result += '"%s": "%s", ' % (k, v)
+            result += '}'
+        return result
 
-class Family(SMSNode):
+
+class Family(NodeWithTriggers):
 
     families = []
     tasks = []
-    triggers = []
+    limits = dict()
+    in_limits = []
+
+    #@property
+    #def parent(self):
+    #    return self._parent
+
+    #@parent.setter
+    #def parent(self, theParent):
+    #    if isinstance(theParent, Task):
+    #        raise Exception, 'A family cannot have a Task as its parent.'
+    #    else:
+    #        super(Family, self).__set__('parent', theParent)
 
     def __init__(self, parse_obj=None, parent=None, name=None):
         if parse_obj is None and name is None:
@@ -300,15 +363,48 @@ class Family(SMSNode):
         else:
             self.families = [Family(f, parent=self) for f in parse_obj.families]
             self.tasks = [Task(t, parent=self) for t in parse_obj.tasks]
+            self._parse_limits(parse_obj)
+            self._parse_in_limits(parse_obj)
+            try:
+                self._trigger_exp = parse_obj.trigger[0]
+            except IndexError:
+                pass
 
     def _parse_triggers(self):
-        for n in self.tasks + self.families:
-            n._parse_triggers()
+        self._parse_trigger()
+        for t in self.tasks:
+            t._parse_trigger()
+        for f in self.families:
+            f._parse_triggers()
 
+    def _parse_limits(self, parse_obj):
+        self.limits = dict()
+        for lim in parse_obj.limits:
+            self.limits[lim[0]] = lim[1]
+
+    # FIXME - untested
+    def _parse_in_limits(self, parse_obj):
+        self.in_limits = []
+        for inlim in parse_obj.inlimits:
+            node = self.get_node(inlim[0])
+            limit = node.limits.get(inlim[1], None)
+            self.in_limits.append((node, limit))
+
+
+
+    # TODO:
+    # - add trigger definition
     def _specific_cdp_definition(self, indent_order=0):
         output = ''
         for n in self.tasks + self.families:
             output += n.cdp_definition(indent_order)
+        return output
+
+    def _start_cdp_definition(self, indent_order=0):
+        output = ''
+        for name, num in self.limits.iteritems():
+            output += '%slimit %s %s\n' % ('\t'*(indent_order+1), name, num)
+        output += super(Family, self)._start_cdp_definition(indent_order)
         return output
 
     def _node_from_path(self, path):
@@ -325,12 +421,16 @@ class Family(SMSNode):
             node = possible_node
         return node
 
-    #def add_task(self, task_obj):
-    #    if task_obj not in self.tasks:
-    #        self.tasks.append(task_obj)
-    #        task_obj.parent = self
-    #        task_obj._update_path(self)
+    def add_task(self, task):
+        if task not in self.tasks:
+            if task.parent is not None:
+                task.parent.remove_task(task)
+            self.tasks.append(task)
+            task.parent = self
 
+    def remove_task(self, task):
+        self.tasks.remove(task)
+        task.parent = None
 
 def main(defFile):
     suite = Suite(defFile)

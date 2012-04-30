@@ -3,7 +3,8 @@ suite suiteTeste
     edit segundo Filipe
     edit terceiro 'Soares'
     edit resto 'Garcia da Silva'
-    family fam1
+    family main
+        limit simultaneous_tasks 5
         edit var5 'Esta e longa'
         task teste
             edit var1 Ricardo
@@ -17,11 +18,16 @@ suite suiteTeste
         endtask
         family subfam1
             task dentro
-                trigger (../outra == complete AND ../maisuma == complete) OR ../outra == complete
-                trigger ../outra == complete
+                trigger ((../outra == complete OR ../outra == unknown) AND (../maisuma == complete OR ../maisuma == unknown))
+                inlimit /main:simultaneous_tasks
                 edit var6 Uma
                 edit var7 Duas
             endtask
         endfamily
+    endfamily
+    family lag
+        edit host geo2
+        task t4
+            edit v1 23
     endfamily
 endsuite
