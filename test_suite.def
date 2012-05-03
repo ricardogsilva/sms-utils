@@ -7,6 +7,8 @@ suite suiteTeste
         limit simultaneous_tasks 5
         edit var5 'Esta e longa'
         task teste
+            label information "nada de mais"
+            meter progress 0 100 100
             edit var1 Ricardo
             edit var2 Joao
         endtask

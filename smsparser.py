@@ -5,18 +5,102 @@
 '''
 Tools for parsing and writing for SMS definition files.
 
-TODO:
-    - Add parsing rules for comments
-    - Add parsing rules for: label, meter
-    - Add a data model for the missing SMS objects (label, meter)
-    - Add a save() method to Suite objects to save their cdp definiton to a file
-    - Add a serialize() method to SMSNode objects that serializes to JSON
-    - Add a deserialize() method to construct SMSNode objects from JSON
+The ultimate goal of this project is to create a django application
+that provides a GUI for creating and editing SMS suites.
 
+The application will be able to:
+    - read existing definition files and generate the corresponding suite
+    - read existing json files and generate the corresponding sms elements
+    - create suites from scratch
+    - add/remove families/tasks/triggers/... from suites
+    - save suites in the database
+    - export suites in:
+        - .def file format
+        - json format
+
+
+TODO:
+    - Sort out the order for the various elements in the parsing
+    - Refactor the code with better inheritance modelling
+    - Add parsing rules for comments
+    - Add a save() method to Suite objects to save their cdp definiton to a file
+    - Add a from_json() method to construct SMSNode objects from JSON
+    - Convert this code to a django application.
+    - Build a GUI with JQuery and JsTree
+
+Suite
+    - name, sms_type, to_json, cdp_definition
+    - parent, path
+    - has variables, families
+Family
+    - name, sms_type, to_json, cdp_definition
+    - parent, path
+    - has variables, families, tasks, labels(?), trigger, meters(?)
+Task
+    - name, sms_type, to_json, cdp_definition
+    - parent, path
+    - has variables, trigger, labels, meters
+Meter
+    - name, sms_type, to_json, cdp_definition
+    - parent, path
+Label
+    - name, sms_type, to_json, cdp_definition
+    - parent, path
 '''
 
 import re
+import json
+import copy
 import pyparsing as pp
+
+# TODO
+# add the remaining SMS elements (trigger)
+def to_json(obj):
+    '''
+    Serialize the SMS element classes to JSON.
+    '''
+
+    if isinstance(obj, Task):
+        result = {
+            'sms_type' : obj.sms_type,
+            'name' : obj.name,
+            'variables' : obj.variables,
+            'labels' : obj.labels,
+            'meters' : obj.meters,
+        }
+    elif isinstance(obj, Family):
+        result = {
+            'sms_type' : obj.sms_type,
+            'name' : obj.name,
+            'variables' : obj.variables,
+            'tasks' : obj.tasks,
+            'families' : obj.families,
+        }
+    elif isinstance(obj, Suite):
+        result = {
+            'sms_type' : obj.sms_type,
+            'name' : obj.name,
+            'variables' : obj.variables,
+            'families' : obj.families,
+        }
+    elif isinstance(obj, Label):
+        result = {
+            'sms_type' : obj.sms_type,
+            'name' : obj.name,
+            'text' : obj.text,
+        }
+    elif isinstance(obj, Meter):
+        result = {
+            'sms_type' : obj.sms_type,
+            'name' : obj.name,
+            'minimum' : obj.minimum,
+            'maximum' : obj.maximum,
+            'mark' : obj.mark,
+        }
+    else:
+        raise TypeError(repr(obj) + 'is not JSON serializable')
+    return result
+
 
 class SMSNode(object):
 
@@ -26,6 +110,7 @@ class SMSNode(object):
     _suite = None
     variables = dict()
     status = 'unknown'
+    sms_type = None
 
     @property
     def name(self):
@@ -67,8 +152,6 @@ class SMSNode(object):
         if parse_obj is not None:
             self.name = parse_obj.name
             self.variables = self._get_variables(parse_obj)
-        else:
-            pass
 
     def cdp_definition(self, indent_order=0):
         output = '%s%s %s\n' % ('\t'*indent_order, self.sms_type, self.name)
@@ -134,6 +217,9 @@ class SMSNode(object):
                 node = base_node._node_from_path(rel_path)
         return node
 
+    def to_json(self, indent=None):
+        return json.dumps(self, default=to_json, indent=indent)
+
     def __repr__(self):
         return self.name
 
@@ -141,15 +227,6 @@ class SMSNode(object):
 class Suite(SMSNode):
 
     families = []
-
-    #@property
-    #def parent(self):
-    #    return self._parent
-
-    #@parent.setter
-    #def parent(self, parent):
-    #    raise Exception, 'A suite cannot have a parent.'
-        
 
     def __init__(self, def_file, grammar=None):
         if grammar is None:
@@ -190,15 +267,18 @@ class Suite(SMSNode):
                             sms_node_path + pp.Literal(':').suppress() + \
                             identifier
                        )
-        #sms_in_limit = pp.Keyword('inlimit').suppress() + pp.restOfLine
         var_value = pp.Word(pp.alphanums) | (quote + pp.Combine(pp.OneOrMore(pp.Word(pp.alphanums)), adjacent=False, joinString=' ') + quote)
         sms_var = var_start + pp.Dict(pp.Group(identifier + var_value))
+        sms_label = pp.Keyword('label').suppress() + pp.Group(identifier + var_value)
+        sms_meter = pp.Keyword('meter').suppress() + pp.Group(identifier + pp.Word(pp.nums) + pp.Word(pp.nums) + pp.Word(pp.nums))
         sms_task = task_start + \
                    pp.Dict(
                         pp.Group(
                             identifier.setResultsName('name') + \
                             pp.Optional(trigger_value.setResultsName('trigger')) & \
                             pp.Group(pp.ZeroOrMore(sms_in_limit)).setResultsName('inlimits') & \
+                            pp.Group(pp.ZeroOrMore(sms_label)).setResultsName('labels') & \
+                            pp.Group(pp.ZeroOrMore(sms_meter)).setResultsName('meters') & \
                             pp.Group(pp.ZeroOrMore(sms_var)).setResultsName('variables')
                         ) \
                     ) + pp.Optional(task_end)
@@ -284,32 +364,54 @@ class NodeWithTriggers(SMSNode):
 
 class Task(NodeWithTriggers):
 
-    #@property
-    #def parent(self):
-    #    return self._parent
-
-    #@parent.setter
-    #def parent(self, theParent):
-    #    if isinstance(theParent, Family):
-    #        super(Task, self).parent = theParent
-    #    else:
-    #        raise Exception, 'A task\'s parent must be a Family.'
-
     in_limits = []
+    meters = []
+    labels = []
 
     def __init__(self, parse_obj=None, parent=None, name=None, 
-                 variables=None, trigger=None):
+                 variables=None, trigger=None, meters=None):
         if parse_obj is None and name is None:
             raise Exception
-        super(Task, self).__init__(parse_obj=parse_obj, parent=parent)
+        else:
+            super(Task, self).__init__(parse_obj=parse_obj, parent=parent)
+            if parse_obj is not None:
+                self._parse_cdp(parse_obj)
+            if name is not None:
+                self.name = name
+            if variables is not None:
+                self.variables.update(variables)
+            if trigger is not None:
+                self.trigger = trigger
+            if meters is not None:
+                self.meters = meters
+
+    def _parse_cdp(self, parse_obj):
+        self.meters = [Meter(m[0], m[1], m[2], m[3], self) for m in parse_obj.meters]
+        self.labels = [Label(la[0], la[1], self) for la in parse_obj.labels]
         try:
             self._trigger_exp = parse_obj.trigger[0]
         except IndexError:
             pass
-        if name is not None:
-            self.name = name
-        if variables is not None:
-            self.variables.update(variables)
+
+    def add_label(self, label):
+        if label not in self.labels:
+            self.labels.append(label)
+            label.parent = self
+
+    def remove_label(self, label):
+        self.labels.remove(label)
+        label.parent = None
+
+    def add_meter(self, meter):
+        if meter not in self.meters:
+            self.meters.append(meter)
+            meter.parent = self
+
+    def remove_meter(self, meter):
+        self.meters.remove(meter)
+        meter.parent = None
+
+
 
     def _node_from_path(self, path):
         node = None
@@ -325,15 +427,6 @@ class Task(NodeWithTriggers):
             output += '%strigger %s\n' % ('\t' * indent_order, trig)
         return output
 
-    def to_json(self):
-        result = '{"type": "%s", "name": "%s", "status": "%s", "parent": "%s"' % \
-                (self.sms_type, self.name, self.status, self.parent)
-        if len(self.variables.keys()) > 0:
-            result += ', "variables": {'
-            for k, v in self.variables.iteritems():
-                result += '"%s": "%s", ' % (k, v)
-            result += '}'
-        return result
 
 
 class Family(NodeWithTriggers):
@@ -342,17 +435,6 @@ class Family(NodeWithTriggers):
     tasks = []
     limits = dict()
     in_limits = []
-
-    #@property
-    #def parent(self):
-    #    return self._parent
-
-    #@parent.setter
-    #def parent(self, theParent):
-    #    if isinstance(theParent, Task):
-    #        raise Exception, 'A family cannot have a Task as its parent.'
-    #    else:
-    #        super(Family, self).__set__('parent', theParent)
 
     def __init__(self, parse_obj=None, parent=None, name=None):
         if parse_obj is None and name is None:
@@ -389,8 +471,6 @@ class Family(NodeWithTriggers):
             node = self.get_node(inlim[0])
             limit = node.limits.get(inlim[1], None)
             self.in_limits.append((node, limit))
-
-
 
     # TODO:
     # - add trigger definition
@@ -432,11 +512,91 @@ class Family(NodeWithTriggers):
         self.tasks.remove(task)
         task.parent = None
 
-def main(defFile):
-    suite = Suite(defFile)
 
-if __name__ == '__main__':
-    import sys
-    main(sys.argv[1])
-    
-    
+class ExtraNode(object):
+
+    _name = ''
+    _parent = None
+    _path = ''
+    sms_type = None
+
+    @property
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, the_name):
+        self._name = the_name
+        self._path = self._path.rpartition(':')[0] + ':' + self._name
+
+    @property
+    def parent(self):
+        return self._parent
+
+    @parent.setter
+    def parent(self, parent):
+        if isinstance(parent, Task):
+            self._parent = parent
+            self._path = parent.path + ':' + self.name
+
+    @property
+    def path(self):
+        return self._path
+
+    def __init__(self, name, parent=None):
+        self.name = name
+        self.parent = parent
+        self.sms_type = self.__class__.__name__.lower()
+
+    def __repr__(self):
+        return self.name
+
+
+
+class Meter(ExtraNode):
+
+    _minimum = 0
+    _maximum = 100
+    _mark = 100
+
+    @property
+    def minimum(self):
+        return self._minimum
+
+    @property
+    def maximum(self):
+        return self._maximum
+
+    @property
+    def mark(self):
+        return self._mark
+
+    @mark.setter
+    def mark(self, value):
+        if self._minimum <= value <= self._maximum:
+            self._mark = value
+        else:
+            pass
+
+    def __init__(self, name, the_min=None, the_max=None, the_mark=None, 
+                 parent=None):
+        super(Meter, self).__init__(name, parent)
+        if the_min is not None:
+            self._minimum = int(the_min)
+        if the_max is not None:
+            self._maximum = int(the_max)
+        if the_mark is not None:
+            self.mark = int(the_mark)
+
+
+class Label(ExtraNode):
+
+    text = ''
+
+    def __init__(self, name, text=None, parent=None):
+        super(Label, self).__init__(name, parent)
+        if text is not None:
+            self.text = text
+
+    def __repr__(self):
+        return self.name
