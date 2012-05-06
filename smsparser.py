@@ -20,7 +20,6 @@ The application will be able to:
 
 
 TODO:
-    - Sort out the order for the various elements in the parsing
     - Refactor the code with better inheritance modelling
     - Add parsing rules for comments
     - Add a save() method to Suite objects to save their cdp definiton to a file
@@ -101,6 +100,39 @@ def to_json(obj):
         raise TypeError(repr(obj) + 'is not JSON serializable')
     return result
 
+def sms_grammar():
+    quote = pp.Word('"\'', exact=1).suppress()
+    colon = pp.Literal(':').suppress()
+    l_paren = pp.Literal('(').suppress()
+    r_paren = pp.Literal(')').suppress()
+    sms_node_path = pp.Word('./_' + pp.alphanums)
+    identifier = pp.Word(pp.alphas, pp.alphanums + '_')
+    var_value = pp.Word(pp.alphanums) | (quote + \
+            pp.Combine(pp.OneOrMore(pp.Word(pp.alphanums)), adjacent=False, 
+                       joinString=' ') + quote)
+    sms_var = pp.Group(pp.Keyword('edit') + identifier + var_value)
+    sms_label = pp.Group(pp.Keyword('label') + identifier + var_value)
+    sms_meter = pp.Group(pp.Keyword('meter') + identifier + pp.Word(pp.nums) * 3)
+    sms_limit = pp.Group(pp.Keyword('limit') + identifier + pp.Word(pp.nums))
+    sms_in_limit = pp.Group(pp.Keyword('inlimit') + sms_node_path + colon + identifier)
+    sms_trigger = pp.Group(pp.Keyword('trigger') + pp.restOfLine)
+    sms_task = pp.Group(
+        pp.Keyword('task') + \
+        identifier + \
+        pp.ZeroOrMore(
+            sms_trigger ^ sms_in_limit ^ sms_label ^ sms_meter ^ sms_var
+        )
+    ) + pp.Optional(pp.Keyword('endtask').suppress())
+    sms_family = pp.Forward()
+    sms_family << pp.Group(
+        pp.Keyword('family') + identifier + pp.ZeroOrMore(
+            sms_in_limit ^ sms_limit ^ sms_trigger ^ sms_var ^ sms_task ^ sms_family
+        )
+    ) + pp.Keyword('endfamily').suppress()
+    sms_suite = pp.Keyword('suite') + identifier + \
+                pp.ZeroOrMore(sms_var ^ sms_family) + \
+                pp.Keyword('endsuite').suppress()
+    return sms_suite
 
 class SMSNode(object):
 
@@ -150,7 +182,7 @@ class SMSNode(object):
         self.sms_type = self.__class__.__name__.lower()
         self.parent = parent
         if parse_obj is not None:
-            self.name = parse_obj.name
+            self.name = parse_obj[1]
             self.variables = self._get_variables(parse_obj)
 
     def cdp_definition(self, indent_order=0):
@@ -173,10 +205,10 @@ class SMSNode(object):
     def _specific_cdp_definition(self, indent_order=0):
         return ''
 
-    def _get_variables(self, parseObj):
+    def _get_variables(self, parse_obj):
         d = dict()
-        for v in parseObj.variables.keys():
-            d[v] = parseObj.variables.__getattr__(v)
+        for v in [var for var in parse_obj if var[0] == 'edit']:
+            d[v[1]] = v[2]
         return d
 
     def get_suite(self):
@@ -223,6 +255,33 @@ class SMSNode(object):
     def __repr__(self):
         return self.name
 
+    # TODO - extend with more filtering options
+    def filter_nodes(self, node_type=None, node_name=None):
+        nodes = []
+        nodes_to_iter = []
+        if hasattr(self, 'families'): 
+            nodes_to_iter += self.families
+        if hasattr(self, 'tasks'): 
+            nodes_to_iter += self.tasks
+        for n in nodes_to_iter:
+            conditions = {
+                'node_type' : False,
+                'node_name' : False,
+            }
+            for c in conditions.keys():
+                value = eval(c)
+                if value is None:
+                    conditions[c] = True
+                else:
+                    if c == 'node_type' and n.sms_type == value:
+                        conditions[c] = True
+                    elif c == 'node_name' and re.search(value, n.name) is not None:
+                        conditions[c] = True
+            if False not in conditions.values():
+                nodes.append(n)
+            nodes += n.filter_nodes(node_type, node_name)
+        return nodes
+
 
 class Suite(SMSNode):
 
@@ -230,13 +289,13 @@ class Suite(SMSNode):
 
     def __init__(self, def_file, grammar=None):
         if grammar is None:
-            grammar = self._get_default_grammar()
+            grammar = sms_grammar()
         self.grammar = grammar
         parse_obj = self._parse_file(def_file)
         self.parse_obj = parse_obj
         super(Suite, self).__init__(parse_obj=parse_obj, parent=None)
         self._path = '/'
-        self.families = [Family(f, parent=self) for f in parse_obj.families]
+        self.families = [Family(f, parent=self) for f in parse_obj if f[0] == 'family']
         for f in self.families:
             f._parse_triggers()
 
@@ -244,62 +303,6 @@ class Suite(SMSNode):
         fh = open(def_file, 'r')
         parse_obj = self.grammar.parseString(fh.read())
         return parse_obj
-
-    def _get_default_grammar(self):
-        quote = pp.Word('\'"', exact=1).suppress()
-        l_paren = pp.Literal('(').suppress()
-        r_paren = pp.Literal(')').suppress()
-        identifier = pp.Word(pp.alphas, pp.alphanums + '_')
-        var_start = pp.Keyword('edit').suppress()
-        task_start = pp.Keyword('task').suppress()
-        task_end = pp.Keyword('endtask').suppress()
-        family_start = pp.Keyword('family').suppress()
-        family_end = pp.Keyword('endfamily').suppress()
-        suite_start = pp.Keyword('suite').suppress()
-        suite_end = pp.Keyword('endsuite').suppress()
-        status_complete = pp.Keyword('complete')
-        trigger_start = pp.Keyword('trigger').suppress()
-        trigger_value = trigger_start + pp.restOfLine
-        sms_limit = pp.Keyword('limit').suppress() + pp.Group(identifier + pp.Word(pp.nums))
-        sms_node_path = pp.Word('./_' + pp.alphanums)
-        sms_in_limit = pp.Group(
-                            pp.Keyword('inlimit').suppress() + \
-                            sms_node_path + pp.Literal(':').suppress() + \
-                            identifier
-                       )
-        var_value = pp.Word(pp.alphanums) | (quote + pp.Combine(pp.OneOrMore(pp.Word(pp.alphanums)), adjacent=False, joinString=' ') + quote)
-        sms_var = var_start + pp.Dict(pp.Group(identifier + var_value))
-        sms_label = pp.Keyword('label').suppress() + pp.Group(identifier + var_value)
-        sms_meter = pp.Keyword('meter').suppress() + pp.Group(identifier + pp.Word(pp.nums) + pp.Word(pp.nums) + pp.Word(pp.nums))
-        sms_task = task_start + \
-                   pp.Dict(
-                        pp.Group(
-                            identifier.setResultsName('name') + \
-                            pp.Optional(trigger_value.setResultsName('trigger')) & \
-                            pp.Group(pp.ZeroOrMore(sms_in_limit)).setResultsName('inlimits') & \
-                            pp.Group(pp.ZeroOrMore(sms_label)).setResultsName('labels') & \
-                            pp.Group(pp.ZeroOrMore(sms_meter)).setResultsName('meters') & \
-                            pp.Group(pp.ZeroOrMore(sms_var)).setResultsName('variables')
-                        ) \
-                    ) + pp.Optional(task_end)
-        sms_family = pp.Forward()
-        sms_family << family_start + \
-                pp.Dict(
-                        pp.Group(
-                            identifier.setResultsName('name') + \
-                            pp.Group(pp.ZeroOrMore(sms_in_limit)).setResultsName('inlimits') & \
-                            pp.Group(pp.ZeroOrMore(sms_limit)).setResultsName('limits') & \
-                            pp.Optional(trigger_value.setResultsName('trigger')) & \
-                            pp.Group(pp.ZeroOrMore(sms_var)).setResultsName('variables') & \
-                            pp.Group(pp.ZeroOrMore(sms_task)).setResultsName('tasks') & \
-                            pp.Group(pp.ZeroOrMore(sms_family)).setResultsName('families') \
-                        )
-                ) + family_end
-        sms_suite = suite_start + identifier.setResultsName('name') + \
-                    pp.Group(pp.ZeroOrMore(sms_var)).setResultsName('variables') & \
-                    pp.Group(pp.ZeroOrMore(sms_family)).setResultsName('families') \
-                    + suite_end
-        return sms_suite
 
     def _specific_cdp_definition(self, indent_order=0):
         output = ''
@@ -386,10 +389,10 @@ class Task(NodeWithTriggers):
                 self.meters = meters
 
     def _parse_cdp(self, parse_obj):
-        self.meters = [Meter(m[0], m[1], m[2], m[3], self) for m in parse_obj.meters]
-        self.labels = [Label(la[0], la[1], self) for la in parse_obj.labels]
+        self.meters = [Meter(m[1], m[2], m[3], m[4], self) for m in parse_obj if m[0] == 'meter']
+        self.labels = [Label(la[1], la[2], self) for la in parse_obj if la[0] == 'label']
         try:
-            self._trigger_exp = parse_obj.trigger[0]
+            self._trigger_exp = [t[1] for t in parse_obj if t[0] == 'trigger'][0]
         except IndexError:
             pass
 
@@ -411,8 +414,6 @@ class Task(NodeWithTriggers):
         self.meters.remove(meter)
         meter.parent = None
 
-
-
     def _node_from_path(self, path):
         node = None
         if path == self.path or path == '':
@@ -426,7 +427,6 @@ class Task(NodeWithTriggers):
             trig = exp % tuple([n.path for n in nodes])
             output += '%strigger %s\n' % ('\t' * indent_order, trig)
         return output
-
 
 
 class Family(NodeWithTriggers):
@@ -443,12 +443,12 @@ class Family(NodeWithTriggers):
         if parse_obj is None:
             self.name = name
         else:
-            self.families = [Family(f, parent=self) for f in parse_obj.families]
-            self.tasks = [Task(t, parent=self) for t in parse_obj.tasks]
+            self.families = [Family(f, parent=self) for f in parse_obj if f[0] == 'family']
+            self.tasks = [Task(t, parent=self) for t in parse_obj if t[0] == 'task']
             self._parse_limits(parse_obj)
             self._parse_in_limits(parse_obj)
             try:
-                self._trigger_exp = parse_obj.trigger[0]
+                self._trigger_exp = [t[1] for t in parse_obj if t[0] == 'trigger'][0]
             except IndexError:
                 pass
 
@@ -461,15 +461,15 @@ class Family(NodeWithTriggers):
 
     def _parse_limits(self, parse_obj):
         self.limits = dict()
-        for lim in parse_obj.limits:
-            self.limits[lim[0]] = lim[1]
+        for lim in [lim for lim in parse_obj if lim[0] == 'limit']:
+            self.limits[lim[1]] = lim[2]
 
     # FIXME - untested
     def _parse_in_limits(self, parse_obj):
         self.in_limits = []
-        for inlim in parse_obj.inlimits:
-            node = self.get_node(inlim[0])
-            limit = node.limits.get(inlim[1], None)
+        for inlim in [il for il in parse_obj if il[0] == 'inlimit']:
+            node = self.get_node(inlim[1])
+            limit = node.limits.get(inlim[2], None)
             self.in_limits.append((node, limit))
 
     # TODO:

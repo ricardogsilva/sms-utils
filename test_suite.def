@@ -5,6 +5,7 @@ suite suiteTeste
     edit resto 'Garcia da Silva'
     family main
         limit simultaneous_tasks 5
+        limit outro_lim 10
         edit var5 'Esta e longa'
         task teste
             label information "nada de mais"
